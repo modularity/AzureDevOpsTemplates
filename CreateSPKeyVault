@@ -1,0 +1,81 @@
+# Requires Azure PowerShell version 1.0.0+ and PowerShell version 6+
+# https://docs.microsoft.com/en-us/powershell/azure/install-az-ps
+
+param
+(
+    [Parameter(Mandatory=$true, HelpMessage="Enter Azure Subscription ID for SPN")]
+    [string] $spnSubscriptionId,
+
+    [Parameter(Mandatory=$true, HelpMessage="Provide a name for SPN")]
+    [string] $spnName,
+
+    [Parameter(Mandatory=$true, HelpMessage="Enter Azure Subscription ID for KV")]
+    [string] $kvSubscriptionId,
+
+    [Parameter(Mandatory=$true, HelpMessage="Provide a name for KV")]
+    [string] $kvName,
+
+    [Parameter(Mandatory=$true, HelpMessage="Provide a resource group for KV")]
+    [string] $kvRG,
+
+    [Parameter(Mandatory=$true, HelpMessage="Provide a location for KV")]
+    [string] $kvLocation
+)
+
+# Initialize
+$ErrorActionPreference = "Stop"
+$VerbosePreference = "SilentlyContinue"
+$spnRole = "contributor" # default is contributor with R&W in it's scope
+$spnScope = "/subscriptions/$spnSubscriptionID" # /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myResourceGroup
+$kvSPNsecretPermissions = ("get", "list")
+
+# Check AZ modules
+$isAzureModulePresent = $PSVersionTable.PSVersion
+if ([String]::IsNullOrEmpty($isAzureModulePresent) -eq $true)
+{
+    Write-Output "Script requires AZ modules. Obtain from https://docs.microsoft.com/en-us/powershell/azure/install-az-ps" -Verbose
+    return
+}
+
+# Sign in interactively, other options available
+# https://docs.microsoft.com/en-us/powershell/azure/authenticate-azureps?view=azps-4.6.1
+Write-Output "`nProvide your credentials to access Azure subscription $spnSubscriptionId" -Verbose
+Connect-AzAccount
+
+# Ensure target Azure Subscription selected for the SP
+$spnContext = Set-AzContext -SubscriptionId $spnSubscriptionID
+# Create SP including name, role and scope
+# Contributor role is default and neccessary for changing/deploying resources in it's scope
+# Reader role is sufficient for read only access in it's scope
+Write-Output "`nCreating a new SPN" -Verbose
+$spn = New-AzADServicePrincipal -DisplayName $spnName -Role $spnRole -Scope $spnScope
+Write-Output "`nSPN creation completed: $spnName" -Verbose
+Write-Output "SPN role: $spnRole" -Verbose
+Write-Output "SPN scope: $spnScope" -Verbose
+
+# Parse, process and print the SP id and secret
+$objId = $spn.Id
+$spnId = $spn.ApplicationId
+$BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($spn.Secret)
+$spnSecret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
+Write-Output "`nCopy and Paste below values for Service Connection" -Verbose
+Write-Output "***************************************************************************"
+Write-Output "Subscription Id: $spnSubscriptionId"
+Write-Output "Subscription Name: $spnName"
+Write-Output "Service Principal Id: $spnId"
+Write-Output "Service Principal Secret: $spnSecret"
+Write-Output "***************************************************************************"
+
+# Ensure target Azure Subscription selected for the KV
+$kvContext = Set-AzContext -SubscriptionId $kvSubscriptionID
+
+# Create a Key Vault 
+$kv = New-AzKeyVault -Name $kvName -ResourceGroupName $kvRG -Location $kvLocation
+Write-Output "`nKV creation completed: $kvName in $kvRG" -Verbose
+
+# Authorize SP and assign access policy
+# **Add** params for key and certificates if needed
+$kvAccess = Set-AzKeyVaultAccessPolicy -VaultName $kvName -ObjectId $objId -PermissionsToSecrets $kvSPNsecretPermissions
+Write-Output "`nKV policy applied in $kvName to $kvSPNsecretPermissions" -Verbose
